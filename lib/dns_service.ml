@@ -3,7 +3,7 @@ open Lwt.Infix
 let dns = Logs.Src.create "dns" ~doc:"Dns service"
 module Log = (val Logs_lwt.src_log dns : Logs_lwt.LOG)
 
-let pp_ip = Ipaddr.V4.pp_hum
+let pp_ip = Ipaddr.V4.pp
 
 let is_dns_query = let open Frame in function
   | Ipv4 { payload = Udp { dst = 53; _ }; _ }
@@ -16,8 +16,8 @@ let is_dns_response = let open Frame in function
   | _ -> false
 
 let query_of_pkt = let open Frame in function
-  | Ipv4 { payload = Udp { dst = 53; payload = Payload buf}}
-  | Ipv4 { payload = Tcp { dst = 53; payload = Payload buf}} ->
+  | Ipv4 { payload = Udp { dst = 53; payload = Payload buf; _}; _}
+  | Ipv4 { payload = Tcp { dst = 53; payload = Payload buf; _}; _} ->
       let open Dns.Packet in
       Lwt.catch (fun () -> Lwt.return @@ parse buf) (fun e ->
           Log.err (fun m -> m "dns packet parse err!")

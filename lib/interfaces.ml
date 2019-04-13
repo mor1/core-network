@@ -25,8 +25,12 @@ module Pkt = struct
     let ip_hd =
       let buf = Cstruct.create Ipv4_wire.sizeof_ipv4 in
       let ip_t = Ipv4_packet.{
-        src; dst; ttl = 38;
-        proto = Marshal.protocol_to_int `ICMP; options = Cstruct.create 0} in
+          src;
+          dst;
+          ttl = 38;
+          proto = Marshal.protocol_to_int `ICMP;
+          options = Cstruct.create 0
+      } in
       let payload_len = Cstruct.len icmp in
       let result = Ipv4_packet.Marshal.into_cstruct ~payload_len ip_t buf in
       assert (result = Ok ());
@@ -46,7 +50,7 @@ type t = {
   mutable intf_cache: Intf.t IpMap.t;
 }
 
-let pp_ip = Ipaddr.V4.pp_hum
+let pp_ip = Ipaddr.V4.pp
 
 let intf_of_ip t ip =
   if IpMap.mem ip t.intf_cache then Lwt.return_ok @@ IpMap.find ip t.intf_cache else
@@ -96,14 +100,14 @@ let acquire_fake_dst t src_ip =
   intf_of_ip_exn "acquire_fake_dst" t src_ip >>= fun intf ->
   intf.acquire_fake_ip () >>= fun fake_ip ->
   Log.info (fun m -> m "acquire fake ip %a from %s %a" pp_ip fake_ip
-            intf.Intf.dev Ipaddr.V4.Prefix.pp_hum intf.Intf.network)
+            intf.Intf.dev Ipaddr.V4.Prefix.pp intf.Intf.network)
   >>= fun () -> Lwt.return fake_ip
 
 let release_fake_dst t fake_dst =
   intf_of_ip_exn  "release_fake_dst" t fake_dst >>= fun intf ->
   intf.release_fake_ip fake_dst >>= fun () ->
   Log.info (fun m -> m "release fake ip %a to %s %a" pp_ip fake_dst
-            intf.Intf.dev Ipaddr.V4.Prefix.pp_hum intf.Intf.network)
+            intf.Intf.dev Ipaddr.V4.Prefix.pp intf.Intf.network)
 
 let register_intf t intf dispatch_fn =
   let rec drain_pkt () =

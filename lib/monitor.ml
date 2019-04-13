@@ -10,15 +10,15 @@ let intf_event l =
   let regex = Printf.sprintf "(%s)|(%s)" up down in
   try
     let groups =
-      let re = Re_posix.(regex |> re |> compile) in
+      let re = Re.Posix.(regex |> re |> compile) in
       exec re l |> Group.all
     in
     if groups.(2) <> "" && groups.(3) <> "" then
       let link = groups.(2) and addr = groups.(3) in
       Some (`Up (link, addr))
     else
-      let addr = groups.(6) in
-      Some (`Down addr)
+    let addr = groups.(6) in
+    Some (`Down addr)
   with Not_found -> None
 
 let set_link_mtu dev mtu =
@@ -32,7 +32,7 @@ let existed_intf interfaces push_intf =
   let st = Lwt_process.pread_lines command in
   Lwt_stream.to_list st >>= fun lines ->
   let regex = "inet (([0-9]+.){3}[0-9]+/[0-9]+) .*(eth[0-9]+)$" in
-  let re = Re_posix.(regex |> re |> compile) in
+  let re = Re.Posix.(regex |> re |> compile) in
   List.fold_left (fun acc line ->
       try let groups = Re.exec re line |> Re.Group.all in
         let dev = groups.(3) and addr = groups.(1) in

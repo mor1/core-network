@@ -9,7 +9,7 @@ let hexdump_buf_debug desp buf =
       Cstruct.hexdump_to_buffer b buf;
       m "%s len:%d pkt:%s" desp (Cstruct.len buf) (Buffer.contents b))
 
-let pp_ip = Ipaddr.V4.pp_hum
+let pp_ip = Ipaddr.V4.pp
 
 
 module Local = struct
@@ -30,7 +30,7 @@ module Local = struct
   let is_to_local ip =
     match !instance with
     | None -> false
-    | Some {address} -> 0 = Ipaddr.V4.compare ip address
+    | Some {address; _} -> 0 = Ipaddr.V4.compare ip address
 
 
   let local_virtual_mac = Macaddr.make_local (fun x -> x + 1)
@@ -260,7 +260,7 @@ let create ?fifo intf_st =
       Lwt.finalize (fun () ->
           Lwt.catch (fun () ->
             Log.info (fun m -> m "register intf %s %a %a" intf.Intf.dev
-              pp_ip intf.Intf.ip Ipaddr.V4.Prefix.pp_hum intf.Intf.network) >>= fun () ->
+              pp_ip intf.Intf.ip Ipaddr.V4.Prefix.pp intf.Intf.network) >>= fun () ->
             Lwt.join [intf_starter (); interfaces_starter ()])
             (fun exn -> Log.err (fun m -> m "intf %s err: %s" intf.Intf.dev (Printexc.to_string exn))))
         (fun () -> Log.info (fun m -> m "intf %s exited!" intf.Intf.dev)) in
@@ -284,7 +284,7 @@ let create ?fifo intf_st =
             |> Int32.add Int32.one |> Ipaddr.V4.of_int32 in
           Intf.set_gateway intf gw;
           Log.info (fun m -> m "set gateway for %s(%a) to %a"
-              intf.Intf.dev Ipaddr.V4.Prefix.pp_hum intf.Intf.network Ipaddr.V4.pp_hum gw)
+              intf.Intf.dev Ipaddr.V4.Prefix.pp intf.Intf.network Ipaddr.V4.pp gw)
           >>= fun () ->
           register_and_start intf intf_starter >>= fun () ->
           junction_lp ()

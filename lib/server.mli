@@ -4,7 +4,7 @@ module Make (B: Vnetif.BACKEND) : sig
   module Response = Opium_kernel.Rock.Response
 
   type conn = Cohttp_mirage.Server_with_conduit.IO.conn * Cohttp.Connection.t
-  type callback = conn -> Cohttp.Request.t -> Cohttp_lwt_body.t -> (Cohttp.Response.t * Cohttp_lwt_body.t) Lwt.t
+  type callback = conn -> Cohttp.Request.t -> Cohttp_lwt.Body.t -> (Cohttp.Response.t * Cohttp_lwt.Body.t) Lwt.t
   type t
 
   val mac: t -> Macaddr.t
@@ -27,4 +27,3 @@ module Make (B: Vnetif.BACKEND) : sig
   val make: B.t -> Ipaddr.V4.t -> t Lwt.t
   val start: t -> ?port:int -> ?callback:callback -> unit -> unit Lwt.t
 end
-

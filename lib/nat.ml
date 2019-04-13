@@ -12,7 +12,7 @@ type  t = {
   mutable rule_handles: pair list IpMap.t;
 }
 
-let pp_ip = Ipaddr.V4.pp_hum
+let pp_ip = Ipaddr.V4.pp
 
 let get_rule_handles t ip =
   if IpMap.mem ip t.rule_handles then Lwt.return @@ IpMap.find ip t.rule_handles
@@ -69,7 +69,7 @@ let set_tcp_checksum buf ph =
   let csum = Tcpip_checksum.ones_complement_list [ph; buf] in
   Tcp.Tcp_wire.set_tcp_checksum buf csum
 
-let translate t p_orig (buf, pkt) =
+let translate t p_orig (_buf, pkt) =
   (* pkt actually doesn't matter as not transmitted *)
   let open Frame in
   let src_ip, dst_ip = IpPairMap.find p_orig t.translation in
@@ -77,15 +77,15 @@ let translate t p_orig (buf, pkt) =
     Log.err (fun m -> m "%s not expected value in match" log) >>= fun () ->
     Lwt.fail (Invalid_argument log) in
   match pkt with
-  | Ipv4 {ihl; raw = nat_buf; payload} ->
+  | Ipv4 {ihl; raw = nat_buf; payload; _} ->
       Ipv4_wire.set_ipv4_src nat_buf (Ipaddr.V4.to_int32 src_ip);
       Ipv4_wire.set_ipv4_dst nat_buf (Ipaddr.V4.to_int32 dst_ip);
       set_ipv4_checksum nat_buf ihl;
       (match payload with
-      | Udp {len; raw = udp_buf} ->
+      | Udp {len; raw = udp_buf; _} ->
           let ph = Ipv4_packet.Marshal.pseudoheader ~src:src_ip ~dst:dst_ip ~proto:`UDP len in
           set_udp_checksum udp_buf ph
-      | Tcp {raw = tcp_buf} ->
+      | Tcp {raw = tcp_buf; _} ->
           let len = Cstruct.len tcp_buf in
           let ph = Ipv4_packet.Marshal.pseudoheader ~src:src_ip ~dst:dst_ip ~proto:`TCP len in
           set_tcp_checksum tcp_buf ph

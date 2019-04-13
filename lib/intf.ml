@@ -54,7 +54,7 @@ let rec write_intf t eth arp send_st =
       let dst = Pkt.dst_of_ipv4 ipv4_pkt in
       if not (Ipaddr.V4.Prefix.mem dst t.network) && t.gateway = None then
         Log.err (fun m -> m "%s(%a without gateway) nowhere to send pkt with dst:%a"
-            t.dev Ipaddr.V4.Prefix.pp_hum t.network Ipaddr.V4.pp_hum dst) >>= fun () ->
+            t.dev Ipaddr.V4.Prefix.pp t.network Ipaddr.V4.pp dst) >>= fun () ->
         write_intf t eth arp send_st
       else if dst = Ipaddr.V4.Prefix.broadcast t.network then
         let dst_mac = Macaddr.broadcast in
