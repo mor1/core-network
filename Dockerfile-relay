@@ -1,12 +1,18 @@
-FROM ocaml/opam:alpine-3.6_ocaml-4.04.2 as builder
+FROM ocaml/opam:alpine-3.6-ocaml-4.04.2 as builder
 
 WORKDIR /core-network
 ADD core-network.export core-network.export
 
-RUN sudo apk update && sudo apk add alpine-sdk bash gmp-dev perl autoconf linux-headers &&\
-    #opam remote add git https://github.com/ocaml/opam-repository.git &&\
-    opam pin add -n mirage-net-psock.0.1.0 https://github.com/sevenEng/mirage-net-psock.git &&\
-    opam switch import core-network.export
+RUN sudo apk --no-cache add --update \
+    alpine-sdk \
+    autoconf \
+    bash \
+    gmp-dev \
+    linux-headers \
+    perl \
+    && opam pin add -n mirage-net-psock.0.1.0 \
+    https://github.com/sevenEng/mirage-net-psock.git \
+    && opam switch import core-network.export
 
 ADD . .
 RUN sudo chown opam: -R . && opam config exec -- jbuilder build bin/relay.exe

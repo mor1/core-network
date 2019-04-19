@@ -38,16 +38,19 @@ module Local = struct
     match !instance with
     | None -> Log.err (fun m -> m "Local service not initialized!")
     | Some t ->
-        let open Ethif_packet in
+        let open Ethernet_packet in
         let source = local_virtual_mac in
         let destination = Service.mac t.service in
         let hd = {source; destination; ethertype} in
         let hd = Marshal.make_cstruct hd in
         let fr = Cstruct.append hd pkt in
-        Backend.write t.backend t.id fr >>= function
+        Backend.write t.backend t.id ~size:(Cstruct.len fr) Cstruct.len
+        >>= function
         | Ok () -> Lwt.return_unit
         | Error err ->
-            Log.err (fun m -> m "write_to_service err: %a" Mirage_net.pp_error err)
+            Log.err (fun m ->
+                m "write_to_service err: %a" Mirage_net.Net.pp_error err
+              )
             >>= Lwt.return
 
   (*from local stack in Server*)
@@ -55,25 +58,41 @@ module Local = struct
     let open Frame in
     let listener buf =
       Lwt.catch (fun () ->
-      match parse buf with
-      | Ok (Ethernet {dst = dst_mac; payload = Ipv4 {dst = dst_ip}})
-        when 0 = Macaddr.compare dst_mac local_virtual_mac ->
-          let pkt_raw = Cstruct.shift buf Ethif_wire.sizeof_ethernet in
-          intf.Intf.send_push @@ Some pkt_raw;
-          Lwt.return_unit
-      | Ok (Ethernet {src = tha; payload = Arp {op = `Request; spa = tpa; tpa = spa}}) ->
-          let arp_resp =
-            let open Arpv4_packet in
-            let t = {op = Arpv4_wire.Reply; sha = local_virtual_mac; spa; tha; tpa} in
-            Marshal.make_cstruct t
-          in
-          write_to_service Ethif_wire.ARP arp_resp
-      | Ok fr ->
-          Log.warn (fun m -> m "not ipv4 or arp request: %s, dropped" (fr_info fr))
-      | Error (`Msg msg) ->
-          Log.err (fun m -> m "parse pkt from local err: %s" msg))
+          match parse buf with
+          | Ok (Ethernet {
+              dst = dst_mac;
+              payload = Ipv4 _;
+              _
+            })
+            when 0 = Macaddr.compare dst_mac local_virtual_mac ->
+              let pkt_raw = Cstruct.shift buf Ethernet_wire.sizeof_ethernet in
+              intf.Intf.send_push @@ Some pkt_raw;
+              Lwt.return_unit
+          | Ok (Ethernet {
+              src = target_mac;
+              payload = Arp {op = `Request; spa = target_ip; tpa = source_ip; _};
+              _
+            }) ->
+              let arp_resp =
+                let open Arp_packet in
+                let t = {
+                  operation = Arp_packet.Reply;
+                  source_mac = local_virtual_mac;
+                  source_ip;
+                  target_mac;
+                  target_ip
+                } in
+                Arp_packet.encode t
+              in
+              write_to_service `ARP arp_resp
+          | Ok fr ->
+              Log.warn (fun m ->
+                  m "not ipv4 or arp request: %s, dropped" (fr_info fr)
+                )
+          | Error (`Msg msg) ->
+              Log.err (fun m -> m "parse pkt from local err: %s" msg))
         (fun e -> Log.err (fun m -> m "set_local_listener: %s\n%s" (Printexc.to_string e) (Printexc.get_backtrace ()))
-        >>= fun () -> Lwt.fail e)
+          >>= fun () -> Lwt.fail e)
     in
     Backend.set_listen_fn t.backend t.id listener
 
@@ -84,9 +103,11 @@ module Local = struct
     let backend = Backend.create ~yield ~use_async_readers () in
     let id =
       match Backend.register backend with
-      | `Ok id -> id
-      | `Error err ->
-          Log.err (fun m -> m "Backend.register err: %a" Mirage_net.pp_error err)
+      | Ok id -> id
+      | Error err ->
+          Log.err (fun m ->
+              m "Backend.register err: %a" Mirage_net.Net.pp_error err
+            )
           |> Lwt.ignore_result; -1
     in
     let address = intf.Intf.ip in
@@ -110,11 +131,11 @@ module Local = struct
             let name = List.assoc "name" dict |> get_string in
             let peers = List.assoc "peers" dict |> get_list get_string in
             Lwt_list.map_p (fun peer -> Policy.connect po name peer) peers >>= fun _ ->
-            let status = Cohttp.Code.(`OK) in
+            let status = `OK in
             Lwt.return (status, `Json (`O []))
           with e -> Lwt.fail e) (fun e ->
           let msg = Printf.sprintf "/connect server err: %s" (Printexc.to_string e) in
-          let status = Cohttp.Code.(`Code 500) in
+          let status = `Code 500 in
           Lwt.return (status, `String msg)) >>= fun (code, body) ->
       respond' ~code body
     in
@@ -134,11 +155,11 @@ module Local = struct
               |> Ipaddr.V4.Prefix.of_address_string_exn
               |> snd in
             Policy.disconnect po name ip >>= fun () ->
-            let status = Cohttp.Code.(`OK) in
+            let status = `OK in
             Lwt.return (status, `Json (`O []))
           with e -> Lwt.fail e) (fun e ->
           let msg = Printf.sprintf "/disconnect server err: %s" (Printexc.to_string e) in
-          let status = Cohttp.Code.(`Code 500) in
+          let status = `Code 500 in
           Lwt.return (status, `String msg)) >>= fun (code, body) ->
       respond' ~code body
     in
@@ -146,27 +167,27 @@ module Local = struct
 
   let service_restart po =
     let service_request_handler = fun req ->
-    Lwt.catch (fun () ->
-      json_of_body_exn req >>= fun obj ->
-      try
-        let open Ezjsonm in
-        let dict = get_dict (value obj) in
-        let name = List.assoc "name" dict |> get_string in
-        let old_ip =
-          List.assoc "old_ip" dict
-          |> get_string
-          |> Ipaddr.V4.of_string_exn in
-        let new_ip =
-          List.assoc "new_ip" dict
-          |> get_string
-          |> Ipaddr.V4.of_string_exn in
-        Policy.substitute po name old_ip new_ip >>= fun () ->
-        let status = Cohttp.Code.(`OK) in
-        Lwt.return (status, `Json (`O []))
-      with e -> Lwt.fail e) (fun e ->
-      let msg = Printf.sprintf "/restart server err: %s" (Printexc.to_string e) in
-      let status = Cohttp.Code.(`Code 500) in
-      Lwt.return (status, `String msg)) >>= fun (code, body) ->
+      Lwt.catch (fun () ->
+          json_of_body_exn req >>= fun obj ->
+          try
+            let open Ezjsonm in
+            let dict = get_dict (value obj) in
+            let name = List.assoc "name" dict |> get_string in
+            let old_ip =
+              List.assoc "old_ip" dict
+              |> get_string
+              |> Ipaddr.V4.of_string_exn in
+            let new_ip =
+              List.assoc "new_ip" dict
+              |> get_string
+              |> Ipaddr.V4.of_string_exn in
+            Policy.substitute po name old_ip new_ip >>= fun () ->
+            let status = `OK in
+            Lwt.return (status, `Json (`O []))
+          with e -> Lwt.fail e) (fun e ->
+          let msg = Printf.sprintf "/restart server err: %s" (Printexc.to_string e) in
+          let status = `Code 500 in
+          Lwt.return (status, `String msg)) >>= fun (code, body) ->
       respond' ~code body
     in
     post "/restart" service_request_handler
@@ -191,11 +212,11 @@ module Local = struct
     post "/privileged" add_privileged_handler
 
   let get_status =
-    let status_handler = fun req -> respond' ~code:`OK (`String "active") in
+    let status_handler = fun _req -> respond' ~code:`OK (`String "active") in
     get "/status" status_handler
 
   let start_service t po =
-   let callback = callback_of_routes [
+    let callback = callback_of_routes [
         connect_for po;
         disconnect_for po;
         service_restart po;
@@ -220,11 +241,12 @@ module Dispatcher = struct
   }
 
   let dispatch t (buf, pkt) =
-    let src_ip, dst_ip, ihl = let open Frame in match pkt with
+    let src_ip, dst_ip, _ihl = let open Frame in match pkt with
       | Ipv4 {src; dst; ihl; _} -> src, dst, ihl
       | _ ->
           Log.err (fun m -> m "Dispathcer: dispatch %s" (Frame.fr_info pkt)) |> Lwt.ignore_result;
-          assert false in
+          assert false
+    in
     if Dns_service.is_dns_query pkt then
       Log.debug (fun m -> m "Dispatcher: a dns query from %a" pp_ip src_ip) >>= fun () ->
       let resolve = Policy.is_authorized_resolve t.policy src_ip in
@@ -232,14 +254,17 @@ module Dispatcher = struct
       let resp = Dns_service.to_dns_response pkt resp in
       Interfaces.to_push t.interfaces dst_ip (fst resp)
     else if Local.is_to_local dst_ip then
-      Local.write_to_service Ethif_wire.IPv4 buf
+      Local.write_to_service `IPv4 buf
     else if Policy.is_authorized_transport t.policy src_ip dst_ip then
-      Nat.translate t.nat (src_ip, dst_ip) (buf, pkt) >>= fun (nat_src_ip, nat_dst_ip, nat_buf, nat_pkt) ->
+      Nat.translate t.nat (src_ip, dst_ip) (buf, pkt)
+      >>= fun (nat_src_ip, nat_dst_ip, nat_buf, _nat_pkt) ->
       Log.debug (fun m -> m "Dispatcher: allowed pkt[NAT] %a -> %a => %a -> %a"
-          pp_ip src_ip pp_ip dst_ip pp_ip nat_src_ip pp_ip nat_dst_ip) >>= fun () ->
+                    pp_ip src_ip pp_ip dst_ip pp_ip nat_src_ip pp_ip nat_dst_ip) >>= fun () ->
       Interfaces.to_push t.interfaces nat_src_ip nat_buf
     else if Dns_service.is_dns_response pkt then Lwt.return_unit
-    else Log.warn (fun m -> m "Dispatcher: dropped pkt %a -> %a" pp_ip src_ip pp_ip dst_ip)
+    else Log.warn (fun m ->
+        m "Dispatcher: dropped pkt %a -> %a" pp_ip src_ip pp_ip dst_ip
+      )
 
 
   let create interfaces nat policy =
@@ -259,9 +284,9 @@ let create ?fifo intf_st =
     let t = fun () ->
       Lwt.finalize (fun () ->
           Lwt.catch (fun () ->
-            Log.info (fun m -> m "register intf %s %a %a" intf.Intf.dev
-              pp_ip intf.Intf.ip Ipaddr.V4.Prefix.pp intf.Intf.network) >>= fun () ->
-            Lwt.join [intf_starter (); interfaces_starter ()])
+              Log.info (fun m -> m "register intf %s %a %a" intf.Intf.dev
+                           pp_ip intf.Intf.ip Ipaddr.V4.Prefix.pp intf.Intf.network) >>= fun () ->
+              Lwt.join [intf_starter (); interfaces_starter ()])
             (fun exn -> Log.err (fun m -> m "intf %s err: %s" intf.Intf.dev (Printexc.to_string exn))))
         (fun () -> Log.info (fun m -> m "intf %s exited!" intf.Intf.dev)) in
     Lwt.return @@ Lwt.async t in
@@ -280,21 +305,21 @@ let create ?fifo intf_st =
         else if intf.dev = "eth1" then
           let network = intf.Intf.network in
           let gw = network
-            |> Ipaddr.V4.Prefix.network |> Ipaddr.V4.to_int32
-            |> Int32.add Int32.one |> Ipaddr.V4.of_int32 in
+                   |> Ipaddr.V4.Prefix.network |> Ipaddr.V4.to_int32
+                   |> Int32.add Int32.one |> Ipaddr.V4.of_int32 in
           Intf.set_gateway intf gw;
           Log.info (fun m -> m "set gateway for %s(%a) to %a"
-              intf.Intf.dev Ipaddr.V4.Prefix.pp intf.Intf.network Ipaddr.V4.pp gw)
+                       intf.Intf.dev Ipaddr.V4.Prefix.pp intf.Intf.network Ipaddr.V4.pp gw)
           >>= fun () ->
           register_and_start intf intf_starter >>= fun () ->
           junction_lp ()
         else
-          register_and_start intf intf_starter >>= fun () ->
-          junction_lp ()
+        register_and_start intf intf_starter >>= fun () ->
+        junction_lp ()
     | Some (`Down dev) ->
         Interfaces.deregister_intf interfaces dev >>= fun () ->
         junction_lp ()
-    in
+  in
 
   Policy.allow_privileged_host policy "arbiter" >>= fun () ->
   Bcast.create ?fifo interfaces >>= fun bcast_starter ->

@@ -1,9 +1,11 @@
 (executables
  (names core_network relay)
  (libraries
+  cmdliner
   lib_core_network
+  logs
   lwt
   lwt.unix
-  logs
-  cmdliner
+  mirage-entropy
+  mirage-os-shim
   ))

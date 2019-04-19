@@ -64,10 +64,18 @@ let to_dns_response pkt resp =
   | Ipv4 {src = dst; dst = src; payload = Tcp {src = dst_port; dst = src_port; _}; _} ->
       let payload_len = Udp_wire.sizeof_udp + Cstruct.len resp in
 
-      let ip_hd = Ipv4_packet.{options = Cstruct.create 0; src; dst; ttl = 38; proto = Marshal.protocol_to_int `UDP} in
+      let ip_hd = Ipv4_packet.{
+          options = Cstruct.create 0;
+          src;
+          dst;
+          ttl = 38;
+          proto = Marshal.protocol_to_int `UDP;
+          id = Random.int 65535;
+          off = 0;
+        } in
       let ip_hd_wire = Cstruct.create Ipv4_wire.sizeof_ipv4 in
       (match Ipv4_packet.Marshal.into_cstruct ~payload_len ip_hd ip_hd_wire with
-      | Error e -> raise @@ Failure "to_response_pkt -> into_cstruct"
+      | Error _ -> raise @@ Failure "to_response_pkt -> into_cstruct"
       | Ok () ->
           Ipv4_wire.set_ipv4_id ip_hd_wire (Random.int 65535);
           Ipv4_wire.set_ipv4_csum ip_hd_wire 0;

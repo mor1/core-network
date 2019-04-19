@@ -28,13 +28,14 @@ module Pkt = struct
           src;
           dst;
           ttl = 38;
+          id = Random.int 65535;
+          off = 0;
           proto = Marshal.protocol_to_int `ICMP;
           options = Cstruct.create 0
       } in
       let payload_len = Cstruct.len icmp in
       let result = Ipv4_packet.Marshal.into_cstruct ~payload_len ip_t buf in
       assert (result = Ok ());
-      Ipv4_wire.set_ipv4_id buf (Random.int 65535);
       Ipv4_wire.set_ipv4_csum buf 0;
       let csum = Tcpip_checksum.ones_complement buf in
       Ipv4_wire.set_ipv4_csum buf csum;
@@ -84,8 +85,6 @@ let to_push t dst_ip pkt =
   | Error msg ->
       Log.err (fun m -> m "to_push: %s" msg)
 
-let notify_mtu t src_ip mtu jumbo_hd = ()
-
 let from_same_network t ipx ipy =
   intf_of_ip t ipx >>= fun intfx ->
   intf_of_ip t ipy >>= fun intfy ->
@@ -114,7 +113,7 @@ let register_intf t intf dispatch_fn =
     Lwt_stream.get intf.recv_st >>= function
     | Some buf ->
         (match Frame.parse_ipv4_pkt buf with
-        | Ok Frame.(Ipv4 {src; dst; ihl} as pkt) ->
+        | Ok Frame.(Ipv4 {src; dst; ihl; _} as pkt) ->
             if Cstruct.len buf > intf.mtu then
               Log.warn (fun m -> m "jumbo packet(%d) %s <- %a"
                 (Cstruct.len buf) intf.Intf.dev pp_ip src) >>= fun () ->
@@ -137,7 +136,7 @@ let register_intf t intf dispatch_fn =
 
 let deregister_intf t dev =
   let intf = ref None in
-  IntfSet.iter (fun ({dev = dev'} as intf') ->
+  IntfSet.iter (fun ({dev = dev'; _} as intf') ->
       if dev' = dev then intf := Some intf') t.interfaces;
   match !intf with
   | None -> Lwt.return_unit
@@ -181,15 +180,15 @@ let with_ip_pair src_ip dst_ip pkt =
     Lwt.fail (Invalid_argument log) in
   let open Frame in
   match parse_ipv4_pkt pkt with
-  | Ok (Ipv4 {ihl; raw = nat_buf; payload}) ->
+  | Ok (Ipv4 {ihl; raw = nat_buf; payload; _}) ->
       Ipv4_wire.set_ipv4_src nat_buf (Ipaddr.V4.to_int32 src_ip);
       Ipv4_wire.set_ipv4_dst nat_buf (Ipaddr.V4.to_int32 dst_ip);
       set_ipv4_checksum nat_buf ihl;
       (match payload with
-      | Udp {len; raw = udp_buf} ->
+      | Udp {len; raw = udp_buf; _} ->
           let ph = Ipv4_packet.Marshal.pseudoheader ~src:src_ip ~dst:dst_ip ~proto:`UDP len in
           set_udp_checksum udp_buf ph
-      | Tcp {raw = tcp_buf} ->
+      | Tcp {raw = tcp_buf; _} ->
           let len = Cstruct.len tcp_buf in
           let ph = Ipv4_packet.Marshal.pseudoheader ~src:src_ip ~dst:dst_ip ~proto:`TCP len in
           set_tcp_checksum tcp_buf ph

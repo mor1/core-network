@@ -1,27 +1,36 @@
-IMAGE_NAME=core-network
-DEFAULT_REG=databoxsystems
-VERSION=latest
+IMAGE_NAME = core-network
+VERSION = latest
+
+DATABOX_REG ?= databoxsystems
+DATABOX_ORG ?= me-box
+DATABOX_ARCHS ?= amd64 arm64v8
 
 .PHONY: all
-all: build-amd64 build-arm64v8 publish-images
+all:  build publish
 
-.PHONY: build-amd64
-build-amd64:
-	docker build -t $(DEFAULT_REG)/$(IMAGE_NAME)-amd64:$(VERSION) . $(OPTS)
-	docker build -t $(DEFAULT_REG)/$(IMAGE_NAME)-relay-amd64:$(VERSION) -f Dockerfile-relay . $(OPTS)
+.PHONY: build
+build: $(patsubst %,build-%,$(DATABOX_ARCHS))
 
-.PHONY: build-arm64v8
-build-arm64v8:
-	docker build -t $(DEFAULT_REG)/$(IMAGE_NAME)-arm64v8:$(VERSION) -f Dockerfile-arm64v8 .  $(OPTS)
-	docker build -t $(DEFAULT_REG)/$(IMAGE_NAME)-relay-arm64v8:$(VERSION) -f Dockerfile-relay . $(OPTS)
+.PHONY: publish
+publish: $(patsubst %,publish-%,$(DATABOX_ARCHS))
 
-.PHONY: publish-images
-publish-images:
-	docker push $(DEFAULT_REG)/$(IMAGE_NAME)-amd64:$(VERSION)
-	docker push $(DEFAULT_REG)/$(IMAGE_NAME)relay-amd64:$(VERSION)
-	docker push $(DEFAULT_REG)/$(IMAGE_NAME)-arm64v8:$(VERSION)
-	docker push $(DEFAULT_REG)/$(IMAGE_NAME)relay-arm64v8:$(VERSION)
+BUILD=docker build --build-arg DATABOX_ORG=$(DATABOX_ORG)
+.PHONY: build-%
+build-%:
+	$(BUILD) -t $(DATABOX_REG)/$(IMAGE_NAME)-$*:$(VERSION) \
+	  -f Dockerfile .
+	$(BUILD) -t $(DATABOX_REG)/$(IMAGE_NAME)-relay-$*:$(VERSION) \
+	  -f Dockerfile-relay .
+
+.PHONY: publish-%
+publish-%:
+	docker push $(DATABOX_REG)/$(IMAGE_NAME)-$*:$(VERSION)
+	docker push $(DATABOX_REG)/$(IMAGE_NAME)-relay-$*:$(VERSION)
 
 .PHONY: test
 test:
-#NOT IMPLIMENTED
+	@echo "NO TESTS IMPLEMENTED!"
+
+.PHONY: clean
+clean:
+	opam config exec -- dune clean || $(RM) -r _build

@@ -1,18 +1,17 @@
-
 type t =
-  | Ethernet: { src: Macaddr.t; dst: Macaddr.t; payload: t } -> t
-  | Arp:      { op: [ `Request | `Reply | `Unknown ]; sha: Macaddr.t; spa: Ipaddr.V4.t; tha: Macaddr.t; tpa: Ipaddr.V4.t} -> t
-  | Ipv4:     { src: Ipaddr.V4.t; dst: Ipaddr.V4.t; dnf: bool; ihl: int; raw: Cstruct.t; payload: t } -> t
-  | Icmp:     { raw: Cstruct.t; payload: t } -> t
-  | Udp:      { src: int; dst: int; len: int; raw: Cstruct.t; payload: t } -> t
-  | Tcp:      { src: int; dst: int; syn: bool; raw: Cstruct.t; payload: t } -> t
-  | Payload:  Cstruct.t -> t
-  | Unknown:  t
+| Ethernet: { src: Macaddr.t; dst: Macaddr.t; payload: t } -> t
+| Arp:      { op: [ `Request | `Reply | `Unknown ]; sha: Macaddr.t; spa: Ipaddr.V4.t; tha: Macaddr.t; tpa: Ipaddr.V4.t} -> t
+| Ipv4:     { src: Ipaddr.V4.t; dst: Ipaddr.V4.t; dnf: bool; ihl: int; raw: Cstruct.t; payload: t } -> t
+| Icmp:     { raw: Cstruct.t; payload: t } -> t
+| Udp:      { src: int; dst: int; len: int; raw: Cstruct.t; payload: t } -> t
+| Tcp:      { src: int; dst: int; syn: bool; raw: Cstruct.t; payload: t } -> t
+| Payload:  Cstruct.t -> t
+| Unknown:  t
 
 open Result
 let ( >>= ) m f = match m with
-  | Ok x -> f x
-  | Error x -> Error x
+| Ok x -> f x
+| Error x -> Error x
 
 let need_space_for buf n description =
   if Cstruct.len buf < n
@@ -97,33 +96,44 @@ let parse buf =
   try
     need_space_for buf 14 "ethernet frame"
     >>= fun () ->
-    let ethertype  = Cstruct.BE.get_uint16 buf 12 in
-    let dst_option = Cstruct.sub buf 0 6 |> Cstruct.to_string |> Macaddr.of_bytes in
-    let src_option = Cstruct.sub buf 6 6 |> Cstruct.to_string |> Macaddr.of_bytes in
-    match dst_option, src_option with
-    | None, _ -> Error (`Msg "failed to parse ethernet destination MAC")
-    | _, None -> Error (`Msg "failed to parse ethernet source MAC")
-    | Some dst, Some src ->
-        let inner = Cstruct.shift buf 14 in
-        if ethertype = 0x0800 then
-          parse_ipv4_pkt inner
-          >>= fun payload ->
-          Ok (Ethernet { src; dst; payload })
-        else if ethertype = 0x0806 then
-          parse_arp_pkt inner
-          >>= fun payload ->
-          Ok (Ethernet { src; dst; payload})
-        else Error (`Msg ("Ethernet payload not ipv4 or arp pkt"))
+    let ethertype = Cstruct.BE.get_uint16 buf 12 in
+    let dstmac = Cstruct.sub buf 0 6 |> Cstruct.to_string |> Macaddr.of_bytes in
+    match dstmac with
+    | Error (`Msg _) as err -> err
+    | Ok dst ->
+        let srcmac =
+          Cstruct.sub buf 6 6 |> Cstruct.to_string |> Macaddr.of_bytes
+        in
+        match srcmac with
+        | Error (`Msg _) as err -> err
+        | Ok src ->
+            let inner = Cstruct.shift buf 14 in
+            if ethertype = 0x0800 then
+              parse_ipv4_pkt inner
+              >>= fun payload -> Ok (Ethernet { src; dst; payload })
+            else if ethertype = 0x0806 then
+              parse_arp_pkt inner
+              >>= fun payload -> Ok (Ethernet { src; dst; payload})
+            else Error (`Msg ("Ethernet payload not ipv4 or arp pkt"))
   with e ->
     Error (`Msg ("Failed to parse ethernet frame: " ^ (Printexc.to_string e)))
 
 
 let rec fr_info = function
-| Ethernet {src; dst; _} -> Printf.sprintf "Ethernet %s ->%s" (Macaddr.to_string src) (Macaddr.to_string dst)
-| Arp {op} -> Printf.sprintf "Arp %s" (match op with `Request -> "request" | `Reply -> "reply" | `Unknown -> "unknown")
-| Ipv4 {src; dst; payload} ->
-    let payload_str = fr_info payload in
-    Printf.sprintf "Ipv4 %s -> %s {%s}" (Ipaddr.V4.to_string src) (Ipaddr.V4.to_string dst) payload_str
+| Ethernet {src; dst; _} ->
+    Printf.sprintf "Ethernet %s ->%s"
+      (Macaddr.to_string src) (Macaddr.to_string dst)
+| Arp {op; _} -> Printf.sprintf "Arp %s"
+                   (match op with
+                   | `Request -> "request"
+                   | `Reply -> "reply"
+                   | `Unknown -> "unknown"
+                   )
+| Ipv4 {src; dst; payload; _} ->
+    Printf.sprintf "Ipv4 %s -> %s {%s}"
+      (Ipaddr.V4.to_string src) (Ipaddr.V4.to_string dst) (fr_info payload)
 | Udp {src; dst; _} -> Printf.sprintf "Udp %d -> %d" src dst
 | Tcp {src; dst; _} -> Printf.sprintf "Tcp %d -> %d" src dst
-| Icmp _ -> "Icmp" | Payload _ -> "Payload" | Unknown -> "Unknown"
+| Icmp _ -> "Icmp"
+| Payload _ -> "Payload"
+| Unknown -> "Unknown"

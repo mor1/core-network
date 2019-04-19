@@ -1,18 +1,17 @@
 open Lwt.Infix
-open Mirage_types_lwt
 
 let service = Logs.Src.create "service" ~doc:"REST service of Bridge"
 module Log = (val Logs_lwt.src_log service : Logs_lwt.LOG)
 
 module Make(Backend: Vnetif.BACKEND) = struct
   module Vnet = Vnetif.Make(Backend)
-  module E = Ethif.Make(Vnet)
-  module A = Arpv4.Make(E)(Mclock)(OS.Time)
-  module I = Static_ipv4.Make(E)(A)
+  module E = Ethernet.Make(Vnet)
+  module A = Arp.Make(E)(OS.Time)
+  module I = Static_ipv4.Make(Mirage_random_stdlib)(Mclock)(E)(A)
   module Icmp = Icmpv4.Make(I)
-  module U = Udp.Make(I)(Stdlibrandom)
-  module T = Tcp.Flow.Make(I)(OS.Time)(Mclock)(Stdlibrandom)
-  module Tcpip = Tcpip_stack_direct.Make(OS.Time)(Stdlibrandom)(Vnet)(E)(A)(I)(Icmp)(U)(T)
+  module U = Udp.Make(I)(Mirage_random_stdlib)
+  module T = Tcp.Flow.Make(I)(OS.Time)(Mclock)(Mirage_random_stdlib)
+  module Tcpip = Tcpip_stack_direct.Make(OS.Time)(Mirage_random_stdlib)(Vnet)(E)(A)(I)(Icmp)(U)(T)
   module C = Conduit_mirage.With_tcp(Tcpip)
   module Http = Cohttp_mirage.Server_with_conduit
 
@@ -20,7 +19,7 @@ module Make(Backend: Vnetif.BACKEND) = struct
   module Response = Opium_kernel.Rock.Response
 
   type conn = Cohttp_mirage.Server_with_conduit.IO.conn * Cohttp.Connection.t
-  type callback = conn -> Cohttp.Request.t -> Cohttp_lwt_body.t -> (Cohttp.Response.t * Cohttp_lwt_body.t) Lwt.t
+  type callback = conn -> Cohttp.Request.t -> Cohttp_lwt.Body.t -> (Cohttp.Response.t * Cohttp_lwt.Body.t) Lwt.t
 
   type t = {
     net: Vnet.t;
@@ -37,7 +36,7 @@ module Make(Backend: Vnetif.BACKEND) = struct
     Http.respond_not_found ~uri ()
 
 
-  let mac {net} = Vnet.mac net
+  let mac {net; _} = Vnet.mac net
 
   let get route action = `GET, Opium_kernel.Route.of_string  route, action
   let post route action = `POST, Opium_kernel.Route.of_string route, action
@@ -56,19 +55,19 @@ module Make(Backend: Vnetif.BACKEND) = struct
   let respond_with_string = Response.of_string_body
 
   let respond ?headers ?(code=`OK) = function
-    | `String s -> respond_with_string ?headers ~code s
-    | `Json s ->
+  | `String s -> respond_with_string ?headers ~code s
+  | `Json s ->
       respond_with_string ~code ~headers:(json_header headers) (Ezjsonm.to_string s)
-    | `Html s ->
+  | `Html s ->
       respond_with_string ~code ~headers:(html_header headers) s
-    | `Xml s ->
+  | `Xml s ->
       respond_with_string ~code ~headers:(xml_header headers) s
 
   let respond' ?headers ?code s =
     s |> respond ?headers ?code |> Lwt.return
 
   let json_of_body_exn req =
-    req |> Request.body |> Cohttp_lwt_body.to_string >|= Ezjsonm.from_string
+    req |> Request.body |> Cohttp_lwt.Body.to_string >|= Ezjsonm.from_string
 
 
   let auth_middleware =
@@ -108,9 +107,9 @@ module Make(Backend: Vnetif.BACKEND) = struct
       Lwt.catch (fun () -> handler req) (fun e ->
           Log.err (fun m -> m "handler err: %s" (Printexc.to_string e)) >>= fun () ->
           let body = Printexc.to_string e in
-          let resp = Response.of_string_body ~code:Cohttp.Code.(`Code 500) body in
+          let resp = Response.of_string_body ~code:(`Code 500) body in
           Lwt.return resp)
-      >>= fun {Response.code; headers; body} ->
+      >>= fun {Response.code; headers; body; _} ->
       Http.respond ~headers ~body ~status:code ()
 
 
@@ -118,14 +117,13 @@ module Make(Backend: Vnetif.BACKEND) = struct
     or_fail "Vnetif.connect" @@ Vnet.connect b >>= fun net ->
     or_fail "E.connect" @@ E.connect net >>= fun ethif ->
     Mclock.connect () >>= fun clock ->
-    or_fail "A.connect" @@ A.connect ethif clock >>= fun arp ->
-    or_fail "I.connect" @@ I.connect ~ip ethif arp >>= fun i ->
-    Lwt.return @@ Stdlibrandom.initialize () >>= fun () ->
+    or_fail "A.connect" @@ A.connect ethif >>= fun arp ->
+    or_fail "I.connect" @@ I.connect ~ip () ethif arp >>= fun i ->
+    Mirage_random_stdlib.initialize () >>= fun () ->
     or_fail "Icmp.connect" @@ Icmp.connect i >>= fun icmp ->
     or_fail "U.connect" @@ U.connect i >>= fun u ->
     or_fail "T.connect" @@ T.connect i clock >>= fun t ->
-    let config = Mirage_stack_lwt.{name = "REST bridge"; interface = net} in
-    or_fail "Tcpip.connect" @@ Tcpip.connect config ethif arp i icmp u t >>= fun tcpip ->
+    or_fail "Tcpip.connect" @@ Tcpip.connect net ethif arp i icmp u t >>= fun tcpip ->
     Nocrypto_entropy_lwt.initialize () >>= fun () ->
     or_fail "C.connect" @@ C.connect tcpip Conduit_mirage.empty >>= fun c ->
     or_fail "C.with_tls" @@ Conduit_mirage.with_tls c >>= fun c_tls ->
@@ -141,12 +139,12 @@ module Make(Backend: Vnetif.BACKEND) = struct
             let config = Tls.Config.server ~certificates:(`Single certificate) () in
             Lwt.return @@ `TLS (config, `TCP port))
           (fun err ->
-            Log.warn (fun m -> m "while initializing tls: %s, roll with http" (Printexc.to_string err)) >>= fun () ->
-            Lwt.return (`TCP port))
+             Log.warn (fun m -> m "while initializing tls: %s, roll with http" (Printexc.to_string err)) >>= fun () ->
+             Lwt.return (`TCP port))
     | Error _ ->
         Lwt.return (`TCP port)
 
-  let start {start_fn} ?(port=8080) ?(callback=default_not_found)() =
+  let start {start_fn; _} ?(port=8080) ?(callback=default_not_found) () =
     server port >>= fun server ->
     let t = Http.make ~callback () in
     start_fn server t

@@ -5,30 +5,30 @@ module R = Rresult.R
 
 module Basic = Basic_backend.Make
 module Vnet = Vnetif.Make(Basic)
-module Eth = Ethif.Make(Vnet)
-module Arp = Arpv4.Make(Eth)(Mclock)(OS.Time)
+module Eth = Ethernet.Make(Vnet)
+module Arp = Arp.Make(Eth)(OS.Time)
 
 
 let arp_query_pkt src_mac src_ip ip =
-  let arp_t = Arpv4_packet.{
-    op = Arpv4_wire.Request;
-    sha = src_mac;
-    spa = src_ip;
-    tha = Macaddr.broadcast;
-    tpa = ip
-  } in
-  let arp_buf = Arpv4_packet.Marshal.make_cstruct arp_t in
-  let eth_t = Ethif_packet.{
-    source = src_mac;
-    destination = Macaddr.broadcast;
-    ethertype = Ethif_wire.ARP;
-  } in
-  let eth_buf = Ethif_packet.Marshal.make_cstruct eth_t in
+  let arp_t = Arp_packet.{
+      operation = Arp_packet.Request;
+      source_mac = src_mac;
+      source_ip = src_ip;
+      target_mac = Macaddr.broadcast;
+      target_ip = ip
+    } in
+  let arp_buf = Arp_packet.encode arp_t in
+  let eth_t = Ethernet_packet.{
+      source = src_mac;
+      destination = Macaddr.broadcast;
+      ethertype = `ARP;
+    } in
+  let eth_buf = Ethernet_packet.Marshal.make_cstruct eth_t in
   Cstruct.concat [eth_buf; arp_buf]
 
 let send fd buf =
   let len = Cstruct.len buf in
-  Lwt_unix.write fd (Cstruct.to_string buf) 0 len
+  Lwt_unix.write fd (Cstruct.to_bytes buf) 0 len
   >>= fun _ -> Lwt.return_unit
 
 let create_recv_st fd =
@@ -41,12 +41,14 @@ let create_recv_st fd =
 
 let assert_arp st expected =
   let to_arp_reply buf =
-    match Ethif_packet.Unmarshal.of_cstruct buf with
+    match Ethernet_packet.Unmarshal.of_cstruct buf with
     | Ok (_, eth_payload) ->
-        (match Arpv4_packet.Unmarshal.of_cstruct eth_payload with
-        | Ok arp_pkt as ok -> ok
-        | Error err -> Error (Arpv4_packet.Unmarshal.string_of_error err))
-    | Error _ as err -> err in
+        (match Arp_packet.decode eth_payload with
+        | Ok _ as ok -> ok
+        | Error e -> Error (Fmt.to_to_string Arp_packet.pp_error e)
+        )
+    | Error _ as err -> err
+  in
   let rec recv () =
     Lwt_stream.get st >>= function
     | None -> Lwt.return_error "stream closed"
@@ -56,8 +58,8 @@ let assert_arp st expected =
         | Ok observed ->
             if observed = expected then Lwt.return_ok ()
             else recv ()
-    in
-    Lwt.catch recv (function
+  in
+  Lwt.catch recv (function
     | Lwt.Canceled -> Lwt.return_ok ()
     | exn -> Lwt.fail exn)
 
@@ -67,7 +69,7 @@ let test_mac =
   for i = 0 to 5 do
     Bytes.set addr i (char_of_int i)
   done;
-  Macaddr.of_bytes_exn addr
+  Macaddr.of_bytes_exn (Bytes.to_string addr)
 
 let test_ip = Ipaddr.V4.of_string_exn "192.168.0.17"
 
@@ -76,7 +78,7 @@ let arp_query fd ip =
   send fd buf
 
 let init dev cidr =
-  let fd, name = Tuntap.opentap ~pi:false ~devname:dev () in
+  let fd, _name = Tuntap.opentap ~pi:false ~devname:dev () in
   let lwt_fd = Lwt_unix.of_unix_file_descr fd in
   let mac = Tuntap.get_macaddr dev in
   let netmask, ip = Ipaddr.V4.Prefix.of_address_string_exn cidr in
@@ -95,59 +97,61 @@ let test_intf () =
   init dev cidr >>= fun (intf, fd, ip, mac) ->
   let recv_st = create_recv_st fd in
 
-  let expected_local = Arpv4_packet.{
-    op = Arpv4_wire.Reply;
-    sha = mac;
-    spa = ip;
-    tha = test_mac;
-    tpa = test_ip;
-  } in
+  let expected_local = Arp_packet.{
+      operation = Arp_packet.Reply;
+      source_mac = mac;
+      source_ip = ip;
+      target_mac = test_mac;
+      target_ip = test_ip;
+    } in
 
   Lwt.pick [
-      (arp_query fd ip
-      >>= fun () -> Lwt_unix.sleep 0.5
-      >>= fun () -> Lwt.return_error "time out");
-      assert_arp recv_st expected_local; ]
+    (arp_query fd ip
+     >>= fun () -> Lwt_unix.sleep 0.5
+     >>= fun () -> Lwt.return_error "time out");
+    assert_arp recv_st expected_local;
+  ]
 
   >>>= fun () ->
 
   intf.Intf.acquire_fake_ip () >>= fun fake_ip ->
 
-  let expected_fake = Arpv4_packet.{
-    op = Arpv4_wire.Reply;
-    sha = mac;
-    spa = fake_ip;
-    tha = test_mac;
-    tpa = test_ip;
-  } in
+  let expected_fake = Arp_packet.{
+      operation = Arp_packet.Reply;
+      source_mac = mac;
+      source_ip = fake_ip;
+      target_mac = test_mac;
+      target_ip = test_ip;
+    } in
 
   Lwt.pick [
-      (arp_query fd fake_ip
-      >>= fun () -> Lwt_unix.sleep 0.5
-      >>= fun () -> Lwt.return_error "time out");
-      assert_arp recv_st expected_fake; ]
+    (arp_query fd fake_ip
+     >>= fun () -> Lwt_unix.sleep 0.5
+     >>= fun () -> Lwt.return_error "time out");
+    assert_arp recv_st expected_fake;
+  ]
 
   >>>= fun () ->
 
   intf.Intf.release_fake_ip fake_ip >>= fun () ->
 
-  let expected_fake = Arpv4_packet.{
-    op = Arpv4_wire.Reply;
-    sha = mac;
-    spa = fake_ip;
-    tha = test_mac;
-    tpa = test_ip;
-  } in
+  let expected_fake = Arp_packet.{
+      operation = Arp_packet.Reply;
+      source_mac = mac;
+      source_ip = fake_ip;
+      target_mac = test_mac;
+      target_ip = test_ip;
+    } in
 
   Lwt.pick [
-      (arp_query fd fake_ip
-      >>= fun () -> Lwt_unix.sleep 1.5
-      >>= fun () -> Lwt.return_error "time out");
-      assert_arp recv_st expected_fake; ]
+    (arp_query fd fake_ip
+     >>= fun () -> Lwt_unix.sleep 1.5
+     >>= fun () -> Lwt.return_error "time out");
+    assert_arp recv_st expected_fake; ]
   >>= fun err ->
-    if R.is_error err
-    && R.get_error err = "time out" then Lwt.return_ok ()
-    else Lwt.return_error "fake ip not time out error"
+  if R.is_error err
+  && R.get_error err = "time out" then Lwt.return_ok ()
+  else Lwt.return_error "fake ip not time out error"
 
 
 let () =
@@ -155,7 +159,8 @@ let () =
   try
     assert (R.is_ok test_re);
     Printf.printf "test OK!\n"
-  with _ when R.is_error test_re ->
+  with
+  | _ when R.is_error test_re ->
       Printf.printf "error: %s" (R.get_error test_re);
       exit 1
-    | _ -> exit 1
+  | _ -> exit 1
